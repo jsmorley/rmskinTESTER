@@ -13,6 +13,7 @@
 #include <chrono>
 #include <future>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -29,6 +30,11 @@ constexpr int BrowseId = 100;
 constexpr int TreeId = 101;
 constexpr int MetadataId = 102;
 constexpr int InstallId = 103;
+constexpr int MoreOptionsId = 104;
+constexpr int DarkModeId = 105;
+constexpr int ReleasesId = 106;
+constexpr int SupportId = 107;
+constexpr auto SettingsKey = L"Software\\rmskinTESTER";
 constexpr UINT_PTR InspectTimer = 1;
 
 int CloseForSetup(const std::filesystem::path& executable) {
@@ -69,21 +75,21 @@ struct Palette {
     COLORREF background{}, panel{}, text{}, quiet{}, border{}, accent{}, onAccent{}, pressed{};
     COLORREF good{}, bad{}, neutral{}, onResult{};
     HBRUSH canvas{}, surface{};
-    bool dark{};
+    bool dark{}, highContrast{};
 
     ~Palette() {
         DeleteObject(canvas);
         DeleteObject(surface);
     }
 
-    void Load(HWND window) {
+    void Load(HWND window, std::optional<bool> darkPreference) {
         DWORD light = 1, size = sizeof(light);
         RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
             L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size);
         HIGHCONTRASTW contrast{sizeof(contrast), 0, nullptr};
         SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0);
-        const bool highContrast = (contrast.dwFlags & HCF_HIGHCONTRASTON) != 0;
-        dark = !light && !highContrast;
+        highContrast = (contrast.dwFlags & HCF_HIGHCONTRASTON) != 0;
+        dark = darkPreference.value_or(light == 0) && !highContrast;
         background = dark ? RGB(25, 30, 39) : RGB(241, 245, 249);
         panel = dark ? RGB(33, 40, 52) : RGB(255, 255, 255);
         text = dark ? RGB(232, 239, 250) : RGB(27, 42, 65);
@@ -167,7 +173,7 @@ struct Group {
 };
 
 struct App {
-    HWND window{}, title{}, package{}, browse{}, install{}, footer{}, evaluation{}, footerDetail{}, evaluationDetail{};
+    HWND window{}, title{}, moreOptions{}, package{}, browse{}, install{}, footer{}, evaluation{}, footerDetail{}, evaluationDetail{};
     HWND treeTitle{}, infoTitle{}, tree{}, info{}, count{};
     HINSTANCE instance{};
     HFONT body{}, heading{}, brand{};
@@ -177,6 +183,7 @@ struct App {
     IFileOpenDialog* activeFileDialog{};
     UINT dpi = 96;
     Palette palette;
+    std::optional<bool> darkPreference;
     RECT openCard{}, validationCard{}, treeCard{}, infoCard{};
     int dividerX{};
     std::future<Report> inspection;
@@ -204,7 +211,7 @@ struct App {
     }
 
     void Theme() {
-        palette.Load(window);
+        palette.Load(window, darkPreference);
         SetWindowTheme(tree, palette.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         SetWindowTheme(info, palette.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         TreeView_SetBkColor(tree, palette.panel);
@@ -258,9 +265,10 @@ struct App {
         Gdiplus::GdiplusStartupInput graphicsOptions;
         Gdiplus::GdiplusStartup(&graphicsToken, &graphicsOptions, nullptr);
         title = Control(L"STATIC", Title, SS_CENTERIMAGE | SS_NOPREFIX);
+        moreOptions = Control(L"BUTTON", L"More options", BS_OWNERDRAW | WS_TABSTOP, MoreOptionsId);
         package = Control(L"STATIC", L"Drop a .rmskin here or browse for a package.", SS_CENTERIMAGE | SS_PATHELLIPSIS | SS_NOPREFIX);
-        browse = Control(L"BUTTON", L"&Browse…", BS_OWNERDRAW | WS_TABSTOP, BrowseId);
-        install = Control(L"BUTTON", L"&Install…", BS_OWNERDRAW | WS_TABSTOP, InstallId);
+        browse = Control(L"BUTTON", L"&Browse", BS_OWNERDRAW | WS_TABSTOP, BrowseId);
+        install = Control(L"BUTTON", L"&Install", BS_OWNERDRAW | WS_TABSTOP, InstallId);
         EnableWindow(install, FALSE);
         footer = Control(L"STATIC", FooterTitle, SS_CENTERIMAGE | SS_NOPREFIX);
         evaluation = Control(L"STATIC", EvaluationTitle, SS_CENTERIMAGE | SS_NOPREFIX);
@@ -275,6 +283,11 @@ struct App {
             ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP, MetadataId);
         SendMessageW(info, EM_SETLIMITTEXT, 0x7ffffffd, 0);
         DragAcceptFiles(window, TRUE);
+        DWORD value = 0, size = sizeof(value);
+        if (RegGetValueW(HKEY_CURRENT_USER, SettingsKey, L"DarkMode", RRF_RT_REG_DWORD,
+            nullptr, &value, &size) == ERROR_SUCCESS && value <= 1) {
+            darkPreference = value != 0;
+        }
         Scale();
         Theme();
         SetFocus(browse);
@@ -298,7 +311,8 @@ struct App {
             MoveWindow(control, x, y, std::max(0, w), std::max(0, h), TRUE);
         };
         const int titleOffset = Px(LogoSize + 11);
-        put(title, left + titleOffset, Px(16), width - titleOffset, Px(54));
+        put(title, left + titleOffset, Px(16), width - titleOffset - Px(54), Px(54));
+        put(moreOptions, right - Px(42), Px(24), Px(42), Px(38));
         put(package, left + Px(16), Px(97), width - Px(158), Px(36));
         put(browse, right - Px(126), Px(96), Px(110), Px(38));
         put(install, right - Px(110), rect.bottom - Px(62), Px(110), Px(38));
@@ -356,20 +370,71 @@ struct App {
 
     void DrawButton(const DRAWITEMSTRUCT& item) const {
         const bool disabled = (item.itemState & ODS_DISABLED) != 0;
-        FillRect(item.hDC, &item.rcItem, disabled || item.CtlID == InstallId ? palette.canvas : palette.surface);
+        const bool menuButton = item.CtlID == MoreOptionsId;
+        FillRect(item.hDC, &item.rcItem, menuButton || disabled || item.CtlID == InstallId ? palette.canvas : palette.surface);
         const bool pressed = (item.itemState & ODS_SELECTED) != 0;
-        const auto fill = disabled ? palette.background : pressed ? palette.pressed : palette.accent;
-        RoundedBox(item.hDC, item.rcItem, Px(10), fill, disabled ? palette.border : palette.accent);
-        SetBkMode(item.hDC, TRANSPARENT);
-        SetTextColor(item.hDC, disabled ? palette.quiet : palette.onAccent);
-        const auto prev = SelectObject(item.hDC, heading);
-        RECT text = item.rcItem;
-        DrawTextW(item.hDC, item.CtlID == InstallId ? L"&Install…" : L"&Browse…", -1, &text, DT_CENTER | DT_VCENTER | DT_SINGLELINE |
-            ((item.itemState & ODS_NOACCEL) ? DT_HIDEPREFIX : 0));
-        SelectObject(item.hDC, prev);
+        const auto fill = menuButton ? (pressed ? palette.background : palette.panel) :
+            disabled ? palette.background : pressed ? palette.pressed : palette.accent;
+        RoundedBox(item.hDC, item.rcItem, Px(10), fill, disabled || menuButton ? palette.border : palette.accent);
+        RECT bounds = item.rcItem;
+        if (menuButton) {
+            const int x = (bounds.left + bounds.right) / 2;
+            const int y = (bounds.top + bounds.bottom) / 2;
+            const int thickness = std::max(1, Px(2));
+            const auto ink = CreateSolidBrush(palette.text);
+            for (const int offset : {-5, 0, 5}) {
+                const int top = y + Px(offset) - thickness / 2;
+                const RECT bar{x - Px(8), top, x + Px(8), top + thickness};
+                FillRect(item.hDC, &bar, ink);
+            }
+            DeleteObject(ink);
+        } else {
+            SetBkMode(item.hDC, TRANSPARENT);
+            SetTextColor(item.hDC, disabled ? palette.quiet : palette.onAccent);
+            const auto prev = SelectObject(item.hDC, heading);
+            DrawTextW(item.hDC, item.CtlID == InstallId ? L"&Install" : L"&Browse", -1, &bounds,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | ((item.itemState & ODS_NOACCEL) ? DT_HIDEPREFIX : 0));
+            SelectObject(item.hDC, prev);
+        }
         if (item.itemState & ODS_FOCUS) {
-            InflateRect(&text, -Px(4), -Px(4));
-            DrawFocusRect(item.hDC, &text);
+            InflateRect(&bounds, -Px(4), -Px(4));
+            DrawFocusRect(item.hDC, &bounds);
+        }
+    }
+
+    void ShowMoreOptions() {
+        HMENU menu = CreatePopupMenu();
+        HMENU settings = CreatePopupMenu();
+        if (!menu || !settings || !AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(settings), L"&Settings")) {
+            if (settings) DestroyMenu(settings);
+            if (menu) DestroyMenu(menu);
+            return;
+        }
+        const UINT flags = MF_STRING | (palette.dark ? MF_CHECKED : MF_UNCHECKED) |
+            (palette.highContrast ? MF_GRAYED : MF_ENABLED);
+        AppendMenuW(settings, flags, DarkModeId, L"&Dark Mode");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, ReleasesId, L"&Releases");
+        AppendMenuW(menu, MF_STRING, SupportId, L"Su&pport");
+        RECT anchor{};
+        GetWindowRect(moreOptions, &anchor);
+        const auto choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTALIGN,
+            anchor.right, anchor.bottom, 0, window, nullptr);
+        DestroyMenu(menu);
+        if (choice == DarkModeId) {
+            const DWORD value = palette.dark ? 0 : 1;
+            const auto saved = RegSetKeyValueW(HKEY_CURRENT_USER, SettingsKey, L"DarkMode", REG_DWORD, &value, sizeof(value));
+            darkPreference = value != 0;
+            Theme();
+            if (saved != ERROR_SUCCESS) {
+                MessageBoxW(window, L"Could not save the dark mode setting for the next launch.", Title, MB_OK | MB_ICONWARNING);
+            }
+        } else if (choice == ReleasesId || choice == SupportId) {
+            const wchar_t* url = choice == ReleasesId ? L"https://github.com/jsmorley/rmskinTESTER/releases" :
+                L"https://forum.rainmeter.net/viewtopic.php?p=247068#p247068";
+            if (reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open", url, nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
+                MessageBoxW(window, L"Could not open the page in the default browser.", Title, MB_OK | MB_ICONERROR);
+            }
         }
     }
 
@@ -592,12 +657,16 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_CTLCOLOREDIT:
         return app->Color(reinterpret_cast<HDC>(wParam), reinterpret_cast<HWND>(lParam));
     case WM_DRAWITEM:
-        if (wParam == BrowseId || wParam == InstallId) {
+        if (wParam == BrowseId || wParam == InstallId || wParam == MoreOptionsId) {
             app->DrawButton(*reinterpret_cast<const DRAWITEMSTRUCT*>(lParam));
             return TRUE;
         }
         break;
     case WM_COMMAND:
+        if (LOWORD(wParam) == MoreOptionsId) {
+            app->ShowMoreOptions();
+            return 0;
+        }
         if (LOWORD(wParam) == BrowseId) {
             app->Browse();
             return 0;

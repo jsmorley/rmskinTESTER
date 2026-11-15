@@ -4,7 +4,7 @@ Unicode True
 !include "Sections.nsh"
 
 !define PRODUCT "rmskinTESTER"
-!define VERSION "1.0.0"
+!define VERSION "1.1.0"
 !define APP_KEY "Software\${PRODUCT}"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT}"
 

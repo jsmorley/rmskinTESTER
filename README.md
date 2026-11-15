@@ -4,7 +4,9 @@ rmskinTESTER is a C++ utility for Windows 10 and 11 x64. Use **Browse**, press *
 
 **Security Assessment** checks the RMSKIN marker and recorded archive length. **Skin Installer Evaluation** also checks the metadata, minimum Windows and Rainmeter versions, installer banner, and recognized components. The app looks for the installer registered for `.rmskin`, then checks the standard `Program Files` locations.
 
-**Install…** is enabled when both checks pass. It rechecks the selected package and opens it in `SkinInstaller.exe` for confirmation. Inspection reads metadata and archive names in memory. It is a format and compatibility check. It does not authenticate the publisher, scan for malware, or verify every payload’s CRC or installation outcome.
+**Install** is enabled when both checks pass. It rechecks the selected package and opens it in `SkinInstaller.exe` for confirmation. Inspection reads metadata and archive names in memory. It is a format and compatibility check. It does not authenticate the publisher, scan for malware, or verify every payload’s CRC or installation outcome.
+
+Open **More options → Settings → Dark Mode** to switch themes. The app follows the Windows setting until you choose a theme and remembers your choice between launches. **Releases** and **Support** open GitHub and the Rainmeter forum.
 
 ## Install or upgrade
 
