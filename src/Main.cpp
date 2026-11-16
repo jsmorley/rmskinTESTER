@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <future>
 #include <memory>
 #include <optional>
@@ -35,10 +36,13 @@ constexpr int MoreOptionsId = 104;
 constexpr int DarkModeId = 105;
 constexpr int ReleasesId = 106;
 constexpr int SupportId = 107;
+constexpr int SummaryToggleId = 108;
+constexpr int FindingsListId = 109;
 constexpr auto SettingsKey = L"Software\\rmskinTESTER";
 constexpr LPARAM ExecutableItem = -1;
 constexpr LPARAM ScriptItem = -2;
 constexpr UINT_PTR InspectTimer = 1;
+constexpr UINT_PTR SummaryTimer = 2;
 
 int CloseForSetup(const std::filesystem::path& executable) {
     struct Request {
@@ -106,7 +110,7 @@ struct Palette {
         neutral = RGB(88, 102, 122);
         onResult = RGB(255, 255, 255);
         executable = dark ? RGB(255, 157, 162) : RGB(171, 35, 42);
-        script = RGB(246, 140, 0);
+        script = RGB(199, 90, 0);
         if (highContrast) {
             background = panel = GetSysColor(COLOR_WINDOW);
             text = quiet = border = GetSysColor(COLOR_WINDOWTEXT);
@@ -226,30 +230,22 @@ FileKind ClassifyFile(std::wstring_view path) {
     return FileKind::Other;
 }
 
-std::wstring SummarizeFiles(const std::vector<std::wstring>& entries) {
-    std::array<size_t, static_cast<size_t>(FileKind::Other)> counts{};
-    size_t scriptCount = 0;
+struct FileCounts {
+    std::array<size_t, static_cast<size_t>(FileKind::Other)> byKind{};
+    size_t scripts{};
+
+    size_t Count(FileKind kind) const { return byKind[static_cast<size_t>(kind)]; }
+};
+
+FileCounts CountFiles(const std::vector<std::wstring>& entries) {
+    FileCounts counts;
     for (const auto& entry : entries) {
         const auto kind = ClassifyFile(entry);
         if (kind == FileKind::Other) continue;
-        ++counts[static_cast<size_t>(kind)];
-        if (kind != FileKind::Executable) ++scriptCount;
+        ++counts.byKind[static_cast<size_t>(kind)];
+        if (kind != FileKind::Executable) ++counts.scripts;
     }
-    const auto executableCount = counts[static_cast<size_t>(FileKind::Executable)];
-    if (!executableCount && !scriptCount) return {};
-    auto summary = L"Found " + std::to_wstring(executableCount) +
-        (executableCount == 1 ? L" executable and " : L" executables and ") +
-        std::to_wstring(scriptCount) + (scriptCount == 1 ? L" script" : L" scripts");
-    summary += L"\r\n(";
-    for (const auto& type : ScriptTypes) {
-        const auto count = counts[static_cast<size_t>(type.kind)];
-        if (type.kind > FileKind::JavaScript && count == 0) continue;
-        if (type.kind != FileKind::Lua) summary += L", ";
-        summary += type.label;
-        summary += L" = " + std::to_wstring(count);
-    }
-    summary += L')';
-    return summary;
+    return counts;
 }
 
 bool InPluginFolder(std::wstring_view path) {
@@ -268,7 +264,8 @@ struct TreeExpansion {
 
 struct App {
     HWND window{}, title{}, moreOptions{}, package{}, browse{}, install{}, footer{}, evaluation{}, footerDetail{}, evaluationDetail{};
-    HWND treeTitle{}, infoTitle{}, tree{}, info{}, count{}, fileSummary{};
+    HWND treeTitle{}, infoTitle{}, tree{}, info{}, count{};
+    HWND summaryToggle{}, findingsList{};
     HINSTANCE instance{};
     HFONT body{}, heading{}, brand{};
     HICON logo{};
@@ -278,16 +275,18 @@ struct App {
     UINT dpi = 96;
     Palette palette;
     std::optional<bool> darkPreference;
-    RECT openCard{}, validationCard{}, treeCard{}, infoCard{};
+    RECT openCard{}, validationCard{}, treeCard{}, infoCard{}, summaryCard{};
     int dividerX{};
     std::future<Report> inspection;
     std::filesystem::path currentPackage;
     std::filesystem::path queued;
     Report report;
-    std::wstring summaryText;
     std::vector<Group> groups;
     bool hasResult = false;
     bool openInstallerWhenReady = false;
+    bool summaryExpanded = false;
+    double summaryProgress = 0.0, summaryStart = 0.0;
+    ULONGLONG summaryStarted = 0;
 
     ~App() {
         DeleteObject(body);
@@ -309,10 +308,13 @@ struct App {
         palette.Load(window, darkPreference);
         SetWindowTheme(tree, palette.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         SetWindowTheme(info, palette.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
-        SetWindowTheme(fileSummary, palette.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+        SetWindowTheme(findingsList, palette.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         TreeView_SetBkColor(tree, palette.panel);
         TreeView_SetTextColor(tree, palette.text);
         TreeView_SetLineColor(tree, palette.border);
+        ListView_SetBkColor(findingsList, palette.panel);
+        ListView_SetTextBkColor(findingsList, palette.panel);
+        ListView_SetTextColor(findingsList, palette.script);
         RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
     }
 
@@ -324,7 +326,7 @@ struct App {
         const auto newBody = font(16, FW_NORMAL);
         const auto newHeading = font(17, FW_SEMIBOLD);
         const auto newBrand = font(32, FW_SEMIBOLD);
-        for (HWND control : {package, browse, install, footerDetail, evaluationDetail, count, tree, info, fileSummary})
+        for (HWND control : {package, browse, install, footerDetail, evaluationDetail, count, tree, info, findingsList})
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(newBody), FALSE);
         for (HWND control : {footer, evaluation, treeTitle, infoTitle})
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(newHeading), FALSE);
@@ -354,7 +356,6 @@ struct App {
         TreeView_SetItemHeight(tree, Px(25));
         TreeView_SetIndent(tree, Px(19));
         SendMessageW(info, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(Px(2), Px(8)));
-        SendMessageW(fileSummary, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(Px(1), Px(1)));
     }
 
     void Init() {
@@ -375,8 +376,22 @@ struct App {
         count = Control(L"STATIC", L"", SS_RIGHT | SS_CENTERIMAGE | SS_NOPREFIX);
         tree = Control(WC_TREEVIEWW, L"Package contents",
             WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_TRACKSELECT, TreeId);
-        fileSummary = Control(L"EDIT", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP);
-        ShowWindow(fileSummary, SW_HIDE);
+        summaryToggle = Control(L"BUTTON", L"Executables and Scripts", BS_OWNERDRAW | WS_TABSTOP, SummaryToggleId);
+        EnableWindow(summaryToggle, FALSE);
+        findingsList = Control(WC_LISTVIEWW, L"Executable and script counts", LVS_REPORT | LVS_NOSORTHEADER |
+            LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_TABSTOP, FindingsListId);
+        ShowWindow(findingsList, SW_HIDE);
+        ListView_SetExtendedListViewStyle(findingsList,
+            LVS_EX_DOUBLEBUFFER | LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+        const wchar_t* const headers[] = {L"Type", L"Extensions", L"Count"};
+        for (int index = 0; index < ARRAYSIZE(headers); ++index) {
+            std::wstring label(headers[index]);
+            LVCOLUMNW column{};
+            column.mask = LVCF_FMT | LVCF_TEXT;
+            column.fmt = index == 2 ? LVCFMT_RIGHT : LVCFMT_LEFT;
+            column.pszText = label.data();
+            ListView_InsertColumn(findingsList, index, &column);
+        }
         infoTitle = Control(L"STATIC", L"RMSKIN.ini", SS_CENTERIMAGE | SS_NOPREFIX);
         info = Control(L"EDIT", L"Package metadata appears here.",
             ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP, MetadataId);
@@ -422,29 +437,81 @@ struct App {
         put(footerDetail, left + Px(16), Px(199), dividerX - left - Px(32), detailHeight);
         put(evaluationDetail, dividerX + Px(16), Px(199), right - dividerX - Px(32), detailHeight);
         const int panelTitleTop = panelsTop + Px(10);
-        const int treeTop = panelsTop + Px(45), infoTop = panelsTop + Px(47);
+        const int infoTop = panelsTop + Px(47);
         put(treeTitle, left + Px(16), panelTitleTop, split - left - Px(145), Px(25));
         put(count, split - Px(123), panelTitleTop, Px(107), Px(25));
-        const int summaryWidth = std::max(0, split - left - Px(32));
-        int summaryHeight = 0;
-        if (!summaryText.empty() && summaryWidth) {
-            const auto dc = GetDC(window);
-            const auto font = SelectObject(dc, body);
-            const int textWidth = std::max(1, summaryWidth - GetSystemMetricsForDpi(SM_CXVSCROLL, dpi) - Px(4));
-            RECT measure{0, 0, textWidth, 0};
-            const int textHeight = DrawTextW(dc, summaryText.c_str(), -1, &measure, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
-            const int available = bottom - treeTop - Px(20);
-            summaryHeight = std::min(textHeight + Px(3), std::max(Px(42), available / 2));
-            SelectObject(dc, font);
-            ReleaseDC(window, dc);
-        }
-        const int summaryTop = bottom - Px(12) - summaryHeight;
-        const int treeBottom = summaryHeight ? summaryTop - Px(8) : summaryTop;
-        put(tree, left + Px(12), treeTop, split - left - Px(24), treeBottom - treeTop);
-        put(fileSummary, left + Px(16), summaryTop, summaryWidth, summaryHeight);
         put(infoTitle, infoCard.left + Px(16), panelTitleTop, right - infoCard.left - Px(32), Px(25));
         put(info, infoCard.left + Px(14), infoTop, right - infoCard.left - Px(26), bottom - infoTop - Px(12));
+        LayoutPackageContents();
         InvalidateRect(window, nullptr, FALSE);
+    }
+
+    void LayoutPackageContents() {
+        const int left = treeCard.left + Px(12), right = treeCard.right - Px(12);
+        const int width = std::max(0, right - left);
+        const int treeTop = treeCard.top + Px(45);
+        const int barHeight = Px(30);
+        const int panelBottom = treeCard.bottom - Px(12);
+        const int closedBarTop = panelBottom - barHeight;
+        const int rows = ListView_GetItemCount(findingsList);
+        RECT firstRow{};
+        const int rowHeight = rows && ListView_GetItemRect(findingsList, 0, &firstRow, LVIR_BOUNDS) ?
+            firstRow.bottom - firstRow.top : Px(22);
+        RECT header{};
+        GetClientRect(ListView_GetHeader(findingsList), &header);
+        const int headerHeight = header.bottom > 0 ? header.bottom : Px(24);
+        const int preferred = rows ? headerHeight + rows * rowHeight + 2 : 0;
+        const int limit = std::max(0, closedBarTop - treeTop - Px(48));
+        const int expandedHeight = std::min(preferred, limit);
+        const int revealed = static_cast<int>(std::lround(expandedHeight * summaryProgress));
+        const int barTop = closedBarTop - revealed;
+        const int panelTop = barTop + barHeight;
+        summaryCard = {left, panelTop, right, panelBottom};
+        MoveWindow(tree, left, treeTop, width, std::max(0, barTop - treeTop - Px(6)), TRUE);
+        MoveWindow(summaryToggle, left, barTop, width, barHeight, TRUE);
+
+        const bool showTable = revealed > 2 && width > 1;
+        if (showTable) {
+            MoveWindow(findingsList, left + 1, panelTop + 1, width - 1, revealed - 2, TRUE);
+            RECT list{};
+            GetClientRect(findingsList, &list);
+            const int available = std::max(0L, list.right);
+            const int countWidth = Px(62);
+            const int labelWidth = std::min(Px(164), available * 36 / 100);
+            const int widths[] = {labelWidth, std::max(0, available - labelWidth - countWidth), countWidth};
+            for (int index = 0; index < ARRAYSIZE(widths); ++index) {
+                if (ListView_GetColumnWidth(findingsList, index) != widths[index])
+                    ListView_SetColumnWidth(findingsList, index, widths[index]);
+            }
+        }
+        ShowWindow(findingsList, showTable ? SW_SHOWNA : SW_HIDE);
+        const RECT changed{left, treeCard.top, right, panelBottom};
+        InvalidateRect(window, &changed, FALSE);
+    }
+
+    void ToggleSummary() {
+        if (!IsWindowEnabled(summaryToggle)) return;
+        summaryExpanded = !summaryExpanded;
+        if (!summaryExpanded && GetFocus() == findingsList) SetFocus(summaryToggle);
+        summaryStart = summaryProgress;
+        summaryStarted = GetTickCount64();
+        BOOL animations = TRUE;
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
+        if (!animations || !SetTimer(window, SummaryTimer, 15, nullptr)) {
+            KillTimer(window, SummaryTimer);
+            summaryProgress = summaryExpanded ? 1.0 : 0.0;
+            LayoutPackageContents();
+        }
+        InvalidateRect(summaryToggle, nullptr, FALSE);
+    }
+
+    void AnimateSummary() {
+        const double fraction = std::min(static_cast<double>(GetTickCount64() - summaryStarted) / 170.0, 1.0);
+        const double eased = 1.0 - (1.0 - fraction) * (1.0 - fraction);
+        const double target = summaryExpanded ? 1.0 : 0.0;
+        summaryProgress = summaryStart + (target - summaryStart) * eased;
+        if (fraction == 1.0) KillTimer(window, SummaryTimer);
+        LayoutPackageContents();
     }
 
     void Paint() const {
@@ -457,6 +524,9 @@ struct App {
         const RECT divider{dividerX, validationCard.top + Px(12), dividerX + 1, validationCard.bottom - Px(12)};
         const HBRUSH rule = CreateSolidBrush(palette.border);
         FillRect(dc, &divider, rule);
+        if (!IsRectEmpty(&summaryCard)) {
+            FrameRect(dc, &summaryCard, rule);
+        }
         DeleteObject(rule);
         if (logo) DrawIconEx(dc, Px(24), Px(7), logo, Px(LogoSize), Px(LogoSize), 0, nullptr, DI_NORMAL);
         if (hasResult && graphicsToken) {
@@ -478,7 +548,6 @@ struct App {
         auto fg = palette.text;
         if (control == package || control == footerDetail || control == evaluationDetail || control == count)
             fg = palette.quiet;
-        if (control == fileSummary) fg = palette.executable;
         SetTextColor(dc, fg);
         SetBkColor(dc, bg);
         return reinterpret_cast<INT_PTR>(onCanvas ? palette.canvas : palette.surface);
@@ -487,6 +556,10 @@ struct App {
     void DrawButton(const DRAWITEMSTRUCT& item) const {
         const bool disabled = (item.itemState & ODS_DISABLED) != 0;
         const bool menuButton = item.CtlID == MoreOptionsId;
+        if (item.CtlID == SummaryToggleId) {
+            DrawSummaryToggle(item, disabled);
+            return;
+        }
         FillRect(item.hDC, &item.rcItem, menuButton || disabled || item.CtlID == InstallId ? palette.canvas : palette.surface);
         const bool pressed = (item.itemState & ODS_SELECTED) != 0;
         const auto fill = menuButton ? (pressed ? palette.background : palette.panel) :
@@ -512,6 +585,44 @@ struct App {
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | ((item.itemState & ODS_NOACCEL) ? DT_HIDEPREFIX : 0));
             SelectObject(item.hDC, prev);
         }
+        if (item.itemState & ODS_FOCUS) {
+            InflateRect(&bounds, -Px(4), -Px(4));
+            DrawFocusRect(item.hDC, &bounds);
+        }
+    }
+
+    void DrawSummaryToggle(const DRAWITEMSTRUCT& item, bool disabled) const {
+        const bool pressed = (item.itemState & ODS_SELECTED) != 0;
+        auto bounds = item.rcItem;
+        const auto fill = disabled || pressed ? palette.panel : palette.background;
+        if (IsRectEmpty(&summaryCard)) {
+            FillRect(item.hDC, &bounds, palette.surface);
+            RoundedBox(item.hDC, bounds, Px(8), fill, palette.border);
+        } else {
+            FillRect(item.hDC, &bounds, disabled || pressed ? palette.surface : palette.canvas);
+            RECT frame = bounds;
+            ++frame.bottom;
+            const auto border = CreateSolidBrush(palette.border);
+            FrameRect(item.hDC, &frame, border);
+            DeleteObject(border);
+        }
+        const auto color = disabled ? palette.quiet : palette.text;
+        SetBkMode(item.hDC, TRANSPARENT);
+        SetTextColor(item.hDC, color);
+        const auto oldFont = SelectObject(item.hDC, disabled ? body : heading);
+        RECT label{bounds.left + Px(10), bounds.top, bounds.right - Px(30), bounds.bottom};
+        DrawTextW(item.hDC, L"Executables and Scripts", -1, &label, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        SelectObject(item.hDC, oldFont);
+
+        const int x = bounds.right - Px(15), y = (bounds.top + bounds.bottom) / 2;
+        const int direction = summaryExpanded ? -1 : 1;
+        const POINT chevron[]{{x - Px(4), y + direction * Px(2)},
+            {x, y - direction * Px(2)}, {x + Px(4), y + direction * Px(2)}};
+        const auto pen = CreatePen(PS_SOLID, std::max(1, Px(2)), color);
+        const auto oldPen = SelectObject(item.hDC, pen);
+        Polyline(item.hDC, chevron, ARRAYSIZE(chevron));
+        SelectObject(item.hDC, oldPen);
+        DeleteObject(pen);
         if (item.itemState & ODS_FOCUS) {
             InflateRect(&bounds, -Px(4), -Px(4));
             DrawFocusRect(item.hDC, &bounds);
@@ -624,8 +735,12 @@ struct App {
         currentPackage = error ? std::move(path) : std::move(absolute);
         openInstallerWhenReady = thenInstall;
         hasResult = false;
-        summaryText.clear();
-        ShowWindow(fileSummary, SW_HIDE);
+        KillTimer(window, SummaryTimer);
+        summaryExpanded = false;
+        summaryProgress = 0.0;
+        if (GetFocus() == summaryToggle || GetFocus() == findingsList) SetFocus(browse);
+        EnableWindow(summaryToggle, FALSE);
+        ListView_DeleteAllItems(findingsList);
         if (GetFocus() == install) SetFocus(browse);
         EnableWindow(install, FALSE);
         Layout();
@@ -729,6 +844,17 @@ struct App {
         return CDRF_DODEFAULT;
     }
 
+    LRESULT ColorFindingsRow(NMLVCUSTOMDRAW& drawing) const {
+        switch (drawing.nmcd.dwDrawStage) {
+        case CDDS_PREPAINT: return CDRF_NOTIFYITEMDRAW;
+        case CDDS_ITEMPREPAINT: return CDRF_NOTIFYSUBITEMDRAW;
+        case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
+            drawing.clrText = drawing.nmcd.lItemlParam == ExecutableItem ? palette.executable : palette.script;
+            break;
+        }
+        return CDRF_DODEFAULT;
+    }
+
     void PopulateTree() {
         TreeExpansion expansion;
         expansion.revealCounts.reserve(report.entries.size() + 1);
@@ -750,13 +876,44 @@ struct App {
         InvalidateRect(tree, nullptr, TRUE);
     }
 
+    void UpdateFileSummary() {
+        const auto counts = CountFiles(report.entries);
+        const auto executables = counts.Count(FileKind::Executable);
+        EnableWindow(summaryToggle, executables || counts.scripts);
+        if (!executables && !counts.scripts) return;
+
+        auto add = [&](std::wstring label, std::wstring extensions, size_t quantity, LPARAM tag) {
+            LVITEMW row{};
+            row.iItem = ListView_GetItemCount(findingsList);
+            row.mask = LVIF_TEXT | LVIF_PARAM;
+            row.pszText = label.data();
+            row.lParam = tag;
+            const int index = ListView_InsertItem(findingsList, &row);
+            if (index >= 0) {
+                auto value = std::to_wstring(quantity);
+                ListView_SetItemText(findingsList, index, 1, extensions.data());
+                ListView_SetItemText(findingsList, index, 2, value.data());
+            }
+        };
+        add(L"Executables", L".exe", executables, ExecutableItem);
+        add(L"Scripts", L"", counts.scripts, ScriptItem);
+        if (!counts.scripts) return;
+        for (const auto& type : ScriptTypes) {
+            const auto quantity = counts.Count(type.kind);
+            if (type.kind > FileKind::JavaScript && quantity == 0) continue;
+            std::wstring extensions;
+            for (const auto extension : type.extensions) {
+                if (extension.empty()) break;
+                if (!extensions.empty()) extensions += L' ';
+                extensions += extension;
+            }
+            add(std::wstring(type.label), std::move(extensions), quantity, ScriptItem);
+        }
+    }
+
     void Present() {
         hasResult = true;
-        summaryText = SummarizeFiles(report.entries);
-        SetWindowTextW(fileSummary, summaryText.c_str());
-        SendMessageW(fileSummary, EM_SETSEL, 0, 0);
-        SendMessageW(fileSummary, EM_SCROLLCARET, 0, 0);
-        ShowWindow(fileSummary, summaryText.empty() ? SW_HIDE : SW_SHOWNA);
+        UpdateFileSummary();
         EnableWindow(install, CanInstall());
         Layout();
         SetWindowTextW(footerDetail, FooterDetail(report.footer));
@@ -794,7 +951,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_SIZE: app->Layout(); return 0;
     case WM_GETMINMAXINFO: {
         auto* bounds = reinterpret_cast<MINMAXINFO*>(lParam);
-        bounds->ptMinTrackSize = {app->Px(740), app->Px(550)};
+        bounds->ptMinTrackSize = {app->Px(740), app->Px(610)};
         return 0;
     }
     case WM_DPICHANGED: {
@@ -814,12 +971,16 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_CTLCOLOREDIT:
         return app->Color(reinterpret_cast<HDC>(wParam), reinterpret_cast<HWND>(lParam));
     case WM_DRAWITEM:
-        if (wParam == BrowseId || wParam == InstallId || wParam == MoreOptionsId) {
+        if (wParam == BrowseId || wParam == InstallId || wParam == MoreOptionsId || wParam == SummaryToggleId) {
             app->DrawButton(*reinterpret_cast<const DRAWITEMSTRUCT*>(lParam));
             return TRUE;
         }
         break;
     case WM_COMMAND:
+        if (LOWORD(wParam) == SummaryToggleId) {
+            app->ToggleSummary();
+            return 0;
+        }
         if (LOWORD(wParam) == MoreOptionsId) {
             app->ShowMoreOptions();
             return 0;
@@ -839,11 +1000,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             app->Expand(*reinterpret_cast<const NMTREEVIEWW*>(lParam));
         if (header->idFrom == TreeId && header->code == NM_CUSTOMDRAW)
             return app->ColorTreeItem(*reinterpret_cast<NMTVCUSTOMDRAW*>(lParam));
+        if (header->idFrom == FindingsListId && header->code == NM_CUSTOMDRAW)
+            return app->ColorFindingsRow(*reinterpret_cast<NMLVCUSTOMDRAW*>(lParam));
         break;
     }
     case WM_DROPFILES: app->Drop(reinterpret_cast<HDROP>(wParam)); return 0;
     case WM_TIMER:
         if (wParam == InspectTimer) app->Poll();
+        if (wParam == SummaryTimer) app->AnimateSummary();
         return 0;
     case WM_CLOSE:
         if (app->activeFileDialog) app->activeFileDialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
@@ -851,6 +1015,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
     case WM_DESTROY:
         KillTimer(window, InspectTimer);
+        KillTimer(window, SummaryTimer);
         PostQuitMessage(0);
         return 0;
     }
@@ -878,7 +1043,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(com)) return 2;
-    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES};
+    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_TREEVIEW_CLASSES | ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
     App app;
     app.instance = instance;

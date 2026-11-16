@@ -35,7 +35,7 @@ When both checks pass, click **Install** in the bottom-right corner. rmskinTESTE
 
 ## Recognize executables and scripts
 
-Executable filenames appear in red. Script filenames appear in orange (`#F68C00`). If the package contains either type, the summary beneath the tree shows the total number of executables and scripts, followed by the script counts by type. The six main script categories appear even when their counts are zero. Additional categories appear when found. Scroll the summary if it extends past the available space.
+Executable filenames appear in red. Script filenames appear in orange (`#C75A00`). Click the **Executables and Scripts** bar at the bottom of **Package contents**. The bar slides up to reveal a table with **Type**, **Extensions**, and **Count** columns. The executable total is red. The script total and breakdown are orange. The six main script categories appear when the package contains scripts, and additional categories appear when found. Click the bar again to close the panel. The bar is grayed out when the package contains neither type.
 
 | Type | Recognized extensions |
 | --- | --- |
