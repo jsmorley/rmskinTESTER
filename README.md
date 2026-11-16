@@ -2,6 +2,10 @@
 
 rmskinTESTER is a C++ utility for Windows 10 and 11 x64. Use **Browse**, press **Ctrl+O**, or drop a Rainmeter `.rmskin` file onto the window. The file tree lists archive entries. The INI panel displays fields in package order with one field per line. Scroll right to read long values.
 
+See the [user manual](Manual.md) for installation, file inspection, on-screen results, and command-line usage.
+
+The tree opens every `Plugin` or `Plugins` folder and expands the paths to executables and recognized scripts. Executable filenames are red and script filenames are orange. The summary beneath the tree counts `.exe` files and groups scripts by type, including Batch (`.bat`, `.cmd`), PowerShell (`.ps1`, `.psm1`), Lua, Python, AutoIt/AutoHotkey, and JavaScript. It also lists other types it finds, including VBScript, Windows Script Host, HTML Applications, and shell scripts. Counts are based on file extensions.
+
 **Security Assessment** checks the RMSKIN marker and recorded archive length. **Skin Installer Evaluation** also checks the metadata, minimum Windows and Rainmeter versions, installer banner, and recognized components. The app looks for the installer registered for `.rmskin`, then checks the standard `Program Files` locations.
 
 **Install** is enabled when both checks pass. It rechecks the selected package and opens it in `SkinInstaller.exe` for confirmation. Inspection reads metadata and archive names in memory. It is a format and compatibility check. It does not authenticate the publisher, scan for malware, or verify every payload’s CRC or installation outcome.

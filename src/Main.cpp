@@ -10,6 +10,7 @@
 #include <uxtheme.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <future>
 #include <memory>
@@ -35,6 +36,8 @@ constexpr int DarkModeId = 105;
 constexpr int ReleasesId = 106;
 constexpr int SupportId = 107;
 constexpr auto SettingsKey = L"Software\\rmskinTESTER";
+constexpr LPARAM ExecutableItem = -1;
+constexpr LPARAM ScriptItem = -2;
 constexpr UINT_PTR InspectTimer = 1;
 
 int CloseForSetup(const std::filesystem::path& executable) {
@@ -73,7 +76,7 @@ int CloseForSetup(const std::filesystem::path& executable) {
 
 struct Palette {
     COLORREF background{}, panel{}, text{}, quiet{}, border{}, accent{}, onAccent{}, pressed{};
-    COLORREF good{}, bad{}, neutral{}, onResult{};
+    COLORREF good{}, bad{}, neutral{}, onResult{}, executable{}, script{};
     HBRUSH canvas{}, surface{};
     bool dark{}, highContrast{};
 
@@ -102,6 +105,8 @@ struct Palette {
         bad = RGB(183, 46, 53);
         neutral = RGB(88, 102, 122);
         onResult = RGB(255, 255, 255);
+        executable = dark ? RGB(255, 157, 162) : RGB(171, 35, 42);
+        script = RGB(246, 140, 0);
         if (highContrast) {
             background = panel = GetSysColor(COLOR_WINDOW);
             text = quiet = border = GetSysColor(COLOR_WINDOWTEXT);
@@ -109,6 +114,7 @@ struct Palette {
             onAccent = GetSysColor(COLOR_HIGHLIGHTTEXT);
             good = bad = neutral = accent;
             onResult = onAccent;
+            executable = script = text;
         }
         DeleteObject(canvas);
         DeleteObject(surface);
@@ -172,9 +178,97 @@ struct Group {
     size_t prefix;
 };
 
+enum class FileKind {
+    Executable, Lua, Batch, PowerShell, Python, Automation, JavaScript,
+    VBScript, WindowsScript, HtmlApplication, Shell, Basic, Perl, Ruby, Php, Tcl, R, Groovy, Sql, Other
+};
+
+struct ScriptType {
+    FileKind kind;
+    std::wstring_view label;
+    std::array<std::wstring_view, 7> extensions;
+};
+
+constexpr ScriptType ScriptTypes[] = {
+    {FileKind::Lua, L"Lua", {L".lua", L".luac"}},
+    {FileKind::Batch, L"Batch", {L".bat", L".cmd"}},
+    {FileKind::PowerShell, L"PowerShell", {L".ps1", L".psm1"}},
+    {FileKind::Python, L"Python", {L".py", L".pyw", L".pyc", L".pyo"}},
+    {FileKind::Automation, L"AutoIt/AutoHotkey", {L".au3", L".a3x", L".ahk"}},
+    {FileKind::JavaScript, L"JavaScript", {L".js", L".mjs", L".cjs", L".jse", L".jsx", L".jsxbin"}},
+    {FileKind::VBScript, L"VBScript", {L".vbs", L".vbe"}},
+    {FileKind::WindowsScript, L"Windows Script Host", {L".wsf", L".wsh", L".sct", L".wsc"}},
+    {FileKind::HtmlApplication, L"HTML Application", {L".hta"}},
+    {FileKind::Shell, L"Shell", {L".sh", L".bash", L".zsh", L".ksh", L".fish", L".csh", L".tcsh"}},
+    {FileKind::Basic, L"BASIC/VBA", {L".bas", L".vba"}},
+    {FileKind::Perl, L"Perl", {L".pl", L".pm"}},
+    {FileKind::Ruby, L"Ruby", {L".rb"}},
+    {FileKind::Php, L"PHP", {L".php", L".phtml"}},
+    {FileKind::Tcl, L"Tcl", {L".tcl", L".expect"}},
+    {FileKind::R, L"R", {L".r"}},
+    {FileKind::Groovy, L"Groovy", {L".groovy", L".gvy"}},
+    {FileKind::Sql, L"SQL", {L".sql"}},
+};
+
+FileKind ClassifyFile(std::wstring_view path) {
+    const auto dot = path.find_last_of(L".\\");
+    if (dot == path.npos || path[dot] != L'.') return FileKind::Other;
+    const auto extension = path.substr(dot);
+    const auto matches = [&](std::wstring_view candidate) {
+        return extension.size() == candidate.size() &&
+            CompareStringOrdinal(extension.data(), static_cast<int>(extension.size()),
+                candidate.data(), static_cast<int>(candidate.size()), TRUE) == CSTR_EQUAL;
+    };
+    if (matches(L".exe")) return FileKind::Executable;
+    for (const auto& type : ScriptTypes) {
+        if (std::ranges::any_of(type.extensions, matches)) return type.kind;
+    }
+    return FileKind::Other;
+}
+
+std::wstring SummarizeFiles(const std::vector<std::wstring>& entries) {
+    std::array<size_t, static_cast<size_t>(FileKind::Other)> counts{};
+    size_t scriptCount = 0;
+    for (const auto& entry : entries) {
+        const auto kind = ClassifyFile(entry);
+        if (kind == FileKind::Other) continue;
+        ++counts[static_cast<size_t>(kind)];
+        if (kind != FileKind::Executable) ++scriptCount;
+    }
+    const auto executableCount = counts[static_cast<size_t>(FileKind::Executable)];
+    if (!executableCount && !scriptCount) return {};
+    auto summary = L"Found " + std::to_wstring(executableCount) +
+        (executableCount == 1 ? L" executable and " : L" executables and ") +
+        std::to_wstring(scriptCount) + (scriptCount == 1 ? L" script" : L" scripts");
+    summary += L"\r\n(";
+    for (const auto& type : ScriptTypes) {
+        const auto count = counts[static_cast<size_t>(type.kind)];
+        if (type.kind > FileKind::JavaScript && count == 0) continue;
+        if (type.kind != FileKind::Lua) summary += L", ";
+        summary += type.label;
+        summary += L" = " + std::to_wstring(count);
+    }
+    summary += L')';
+    return summary;
+}
+
+bool InPluginFolder(std::wstring_view path) {
+    for (auto slash = path.find(L'\\'); slash != path.npos; slash = path.find(L'\\')) {
+        if (slash == 6 && CompareStringOrdinal(path.data(), 6, L"Plugin", 6, TRUE) == CSTR_EQUAL) return true;
+        if (slash == 7 && CompareStringOrdinal(path.data(), 7, L"Plugins", 7, TRUE) == CSTR_EQUAL) return true;
+        path.remove_prefix(slash + 1);
+    }
+    return false;
+}
+
+struct TreeExpansion {
+    std::vector<size_t> revealCounts;
+    std::vector<std::pair<HTREEITEM, Group>> pending;
+};
+
 struct App {
     HWND window{}, title{}, moreOptions{}, package{}, browse{}, install{}, footer{}, evaluation{}, footerDetail{}, evaluationDetail{};
-    HWND treeTitle{}, infoTitle{}, tree{}, info{}, count{};
+    HWND treeTitle{}, infoTitle{}, tree{}, info{}, count{}, fileSummary{};
     HINSTANCE instance{};
     HFONT body{}, heading{}, brand{};
     HICON logo{};
@@ -190,6 +284,7 @@ struct App {
     std::filesystem::path currentPackage;
     std::filesystem::path queued;
     Report report;
+    std::wstring summaryText;
     std::vector<Group> groups;
     bool hasResult = false;
     bool openInstallerWhenReady = false;
@@ -214,6 +309,7 @@ struct App {
         palette.Load(window, darkPreference);
         SetWindowTheme(tree, palette.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         SetWindowTheme(info, palette.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+        SetWindowTheme(fileSummary, palette.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         TreeView_SetBkColor(tree, palette.panel);
         TreeView_SetTextColor(tree, palette.text);
         TreeView_SetLineColor(tree, palette.border);
@@ -228,7 +324,7 @@ struct App {
         const auto newBody = font(16, FW_NORMAL);
         const auto newHeading = font(17, FW_SEMIBOLD);
         const auto newBrand = font(32, FW_SEMIBOLD);
-        for (HWND control : {package, browse, install, footerDetail, evaluationDetail, count, tree, info})
+        for (HWND control : {package, browse, install, footerDetail, evaluationDetail, count, tree, info, fileSummary})
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(newBody), FALSE);
         for (HWND control : {footer, evaluation, treeTitle, infoTitle})
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(newHeading), FALSE);
@@ -258,6 +354,7 @@ struct App {
         TreeView_SetItemHeight(tree, Px(25));
         TreeView_SetIndent(tree, Px(19));
         SendMessageW(info, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(Px(2), Px(8)));
+        SendMessageW(fileSummary, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(Px(1), Px(1)));
     }
 
     void Init() {
@@ -278,6 +375,8 @@ struct App {
         count = Control(L"STATIC", L"", SS_RIGHT | SS_CENTERIMAGE | SS_NOPREFIX);
         tree = Control(WC_TREEVIEWW, L"Package contents",
             WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_TRACKSELECT, TreeId);
+        fileSummary = Control(L"EDIT", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP);
+        ShowWindow(fileSummary, SW_HIDE);
         infoTitle = Control(L"STATIC", L"RMSKIN.ini", SS_CENTERIMAGE | SS_NOPREFIX);
         info = Control(L"EDIT", L"Package metadata appears here.",
             ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP, MetadataId);
@@ -326,7 +425,23 @@ struct App {
         const int treeTop = panelsTop + Px(45), infoTop = panelsTop + Px(47);
         put(treeTitle, left + Px(16), panelTitleTop, split - left - Px(145), Px(25));
         put(count, split - Px(123), panelTitleTop, Px(107), Px(25));
-        put(tree, left + Px(12), treeTop, split - left - Px(24), bottom - treeTop - Px(12));
+        const int summaryWidth = std::max(0, split - left - Px(32));
+        int summaryHeight = 0;
+        if (!summaryText.empty() && summaryWidth) {
+            const auto dc = GetDC(window);
+            const auto font = SelectObject(dc, body);
+            const int textWidth = std::max(1, summaryWidth - GetSystemMetricsForDpi(SM_CXVSCROLL, dpi) - Px(4));
+            RECT measure{0, 0, textWidth, 0};
+            const int textHeight = DrawTextW(dc, summaryText.c_str(), -1, &measure, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+            const int available = bottom - treeTop - Px(20);
+            summaryHeight = std::min(textHeight + Px(3), std::max(Px(42), available / 2));
+            SelectObject(dc, font);
+            ReleaseDC(window, dc);
+        }
+        const int summaryTop = bottom - Px(12) - summaryHeight;
+        const int treeBottom = summaryHeight ? summaryTop - Px(8) : summaryTop;
+        put(tree, left + Px(12), treeTop, split - left - Px(24), treeBottom - treeTop);
+        put(fileSummary, left + Px(16), summaryTop, summaryWidth, summaryHeight);
         put(infoTitle, infoCard.left + Px(16), panelTitleTop, right - infoCard.left - Px(32), Px(25));
         put(info, infoCard.left + Px(14), infoTop, right - infoCard.left - Px(26), bottom - infoTop - Px(12));
         InvalidateRect(window, nullptr, FALSE);
@@ -363,6 +478,7 @@ struct App {
         auto fg = palette.text;
         if (control == package || control == footerDetail || control == evaluationDetail || control == count)
             fg = palette.quiet;
+        if (control == fileSummary) fg = palette.executable;
         SetTextColor(dc, fg);
         SetBkColor(dc, bg);
         return reinterpret_cast<INT_PTR>(onCanvas ? palette.canvas : palette.surface);
@@ -508,6 +624,8 @@ struct App {
         currentPackage = error ? std::move(path) : std::move(absolute);
         openInstallerWhenReady = thenInstall;
         hasResult = false;
+        summaryText.clear();
+        ShowWindow(fileSummary, SW_HIDE);
         if (GetFocus() == install) SetFocus(browse);
         EnableWindow(install, FALSE);
         Layout();
@@ -554,14 +672,14 @@ struct App {
         else Present();
     }
 
-    void AddNodes(HTREEITEM parent, Group group) {
+    void AddNodes(HTREEITEM parent, Group group, TreeExpansion* expansion = nullptr) {
         // Walk immediate siblings in reverse so TVI_FIRST can insert in constant time.
         for (size_t i = group.end; i > group.first;) {
             const auto& path = report.entries[--i];
             const auto slash = path.find(L'\\', group.prefix);
             bool folder = slash != std::wstring::npos;
-            size_t id = 0;
-            bool children = false;
+            LPARAM id = 0;
+            Group childGroup{};
             if (folder) {
                 const auto end = i + 1;
                 const auto prefix = std::wstring_view(path).substr(0, slash + 1);
@@ -570,11 +688,14 @@ struct App {
                 const auto hasEntry = std::ranges::upper_bound(
                     report.entries.begin() + i, report.entries.begin() + end, prefix);
                 const auto start = static_cast<size_t>(hasEntry - report.entries.begin());
-                children = start < end;
-                if (children) {
-                    groups.push_back({start, end, slash + 1});
-                    id = groups.size();
+                childGroup = {start, end, slash + 1};
+                if (start < end) {
+                    groups.push_back(childGroup);
+                    id = static_cast<LPARAM>(groups.size());
                 }
+            } else {
+                const auto kind = ClassifyFile(path);
+                if (kind != FileKind::Other) id = kind == FileKind::Executable ? ExecutableItem : ScriptItem;
             }
             auto name = path.substr(group.prefix, slash == std::wstring::npos ? slash : slash - group.prefix);
             if (name.empty()) name = L"(empty name)";
@@ -584,19 +705,58 @@ struct App {
             node.item.mask = TVIF_TEXT | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_CHILDREN | TVIF_PARAM;
             node.item.pszText = name.data();
             node.item.iImage = node.item.iSelectedImage = folder ? 1 : 0;
-            node.item.cChildren = children ? 1 : 0;
-            node.item.lParam = static_cast<LPARAM>(id);
-            TreeView_InsertItem(tree, &node);
+            node.item.cChildren = id > 0 ? 1 : 0;
+            node.item.lParam = id;
+            const auto item = TreeView_InsertItem(tree, &node);
+            if (item && expansion && id > 0 &&
+                expansion->revealCounts[childGroup.first] != expansion->revealCounts[childGroup.end]) {
+                expansion->pending.emplace_back(item, childGroup);
+            }
         }
     }
 
     void Expand(const NMTREEVIEWW& event) {
-        if (event.action != TVE_EXPAND || !event.itemNew.lParam || TreeView_GetChild(tree, event.itemNew.hItem)) return;
+        if (event.action != TVE_EXPAND || event.itemNew.lParam <= 0 || TreeView_GetChild(tree, event.itemNew.hItem)) return;
         AddNodes(event.itemNew.hItem, groups[static_cast<size_t>(event.itemNew.lParam) - 1]);
+    }
+
+    LRESULT ColorTreeItem(NMTVCUSTOMDRAW& drawing) const {
+        if (drawing.nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+        if (drawing.nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+            if (drawing.nmcd.lItemlParam == ExecutableItem) drawing.clrText = palette.executable;
+            if (drawing.nmcd.lItemlParam == ScriptItem) drawing.clrText = palette.script;
+        }
+        return CDRF_DODEFAULT;
+    }
+
+    void PopulateTree() {
+        TreeExpansion expansion;
+        expansion.revealCounts.reserve(report.entries.size() + 1);
+        expansion.revealCounts.push_back(0);
+        for (const auto& path : report.entries) {
+            const bool reveal = ClassifyFile(path) != FileKind::Other || InPluginFolder(path);
+            expansion.revealCounts.push_back(expansion.revealCounts.back() + (reveal ? 1 : 0));
+        }
+
+        SendMessageW(tree, WM_SETREDRAW, FALSE, 0);
+        AddNodes(TVI_ROOT, {0, report.entries.size(), 0}, &expansion);
+        while (!expansion.pending.empty()) {
+            const auto [item, group] = expansion.pending.back();
+            expansion.pending.pop_back();
+            AddNodes(item, group, &expansion);
+            TreeView_Expand(tree, item, TVE_EXPAND);
+        }
+        SendMessageW(tree, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(tree, nullptr, TRUE);
     }
 
     void Present() {
         hasResult = true;
+        summaryText = SummarizeFiles(report.entries);
+        SetWindowTextW(fileSummary, summaryText.c_str());
+        SendMessageW(fileSummary, EM_SETSEL, 0, 0);
+        SendMessageW(fileSummary, EM_SCROLLCARET, 0, 0);
+        ShowWindow(fileSummary, summaryText.empty() ? SW_HIDE : SW_SHOWNA);
         EnableWindow(install, CanInstall());
         Layout();
         SetWindowTextW(footerDetail, FooterDetail(report.footer));
@@ -616,10 +776,7 @@ struct App {
         SetWindowTextW(info, bullets.c_str());
         SendMessageW(info, EM_SETSEL, 0, 0);
         SendMessageW(info, EM_SCROLLCARET, 0, 0);
-        SendMessageW(tree, WM_SETREDRAW, FALSE, 0);
-        AddNodes(TVI_ROOT, {0, report.entries.size(), 0});
-        SendMessageW(tree, WM_SETREDRAW, TRUE, 0);
-        InvalidateRect(tree, nullptr, TRUE);
+        PopulateTree();
         if (std::exchange(openInstallerWhenReady, false) && CanInstall()) LaunchInstaller();
     }
 };
@@ -680,6 +837,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         const auto* header = reinterpret_cast<const NMHDR*>(lParam);
         if (header->idFrom == TreeId && header->code == TVN_ITEMEXPANDINGW)
             app->Expand(*reinterpret_cast<const NMTREEVIEWW*>(lParam));
+        if (header->idFrom == TreeId && header->code == NM_CUSTOMDRAW)
+            return app->ColorTreeItem(*reinterpret_cast<NMTVCUSTOMDRAW*>(lParam));
         break;
     }
     case WM_DROPFILES: app->Drop(reinterpret_cast<HDROP>(wParam)); return 0;
