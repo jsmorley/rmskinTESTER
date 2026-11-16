@@ -20,6 +20,8 @@ target_compile_definitions(package PUBLIC UNICODE _UNICODE NOMINMAX WIN32_LEAN_A
 add_executable(rmskinTESTER WIN32 src/Main.cpp src/App.rc)
 target_link_libraries(rmskinTESTER PRIVATE package comctl32 dwmapi gdiplus uxtheme)
 target_compile_definitions(rmskinTESTER PRIVATE RMSKINTESTER_VERSION=L\"${PROJECT_VERSION}\")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS Manual.txt)
+file(GENERATE OUTPUT "$<TARGET_FILE_DIR:rmskinTESTER>/Manual.txt" INPUT "Manual.txt" NEWLINE_STYLE CRLF)
 add_executable(rmskinTESTER-cli src/ConsoleMain.cpp src/App.rc)
 target_link_libraries(rmskinTESTER-cli PRIVATE package)
 if(MSVC)

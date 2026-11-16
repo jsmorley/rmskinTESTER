@@ -1,0 +1,132 @@
+rmskinTESTER User Manual
+========================
+
+rmskinTESTER inspects Rainmeter .rmskin packages on Windows 10 and 11 x64.
+Use it to see which files a package contains and whether it passes the
+checks for opening in Rainmeter Skin Installer.
+
+Install or upgrade
+------------------
+
+1. Download and run rmskinTESTER-Setup.exe. If you downloaded the Setup ZIP,
+   extract the EXE first.
+2. Use the default folder, C:\Program Files\rmskinTESTER, or choose another
+   location. Setup remembers a custom location for upgrades.
+3. Select Create Start menu shortcut if you want a shortcut for your
+   Windows account. Setup selects it on a fresh install and clears it on
+   upgrades. Leaving it clear preserves any existing shortcut.
+4. Finish Setup and choose whether to launch the app.
+
+During an upgrade, Setup closes running copies from the selected install
+folder before replacing them. If a command-line check is still running,
+let it finish and click Retry. To uninstall, use Installed apps in Windows
+or run Uninstall.exe from the installation folder.
+
+For portable use, extract the ZIP to a folder you choose and run
+rmskinTESTER.exe directly. Keep Manual.txt next to the executable.
+
+GitHub Releases
+https://github.com/jsmorley/rmskinTESTER/releases
+
+Open and inspect a package
+--------------------------
+
+1. Click Browse, press Ctrl+O, or drag a .rmskin file from File Explorer
+   onto the app.
+2. Expand folders in Package contents to see individual files. The app
+   automatically opens Plugin and Plugins folders and the paths to
+   recognized executables and scripts.
+3. Read the RMSKIN.ini entries in the right-hand pane. Fields appear in
+   package order. Use the horizontal scrollbar for long values.
+4. Review the results and the file summary before opening the package in
+   Skin Installer.
+
+The tester can display readable archive contents even when validation
+fails. If the archive directory is unreadable, the tree may be empty.
+
+Read the two results
+--------------------
+
+Security Assessment checks whether the file uses the expected Rainmeter
+package format.
+
+Skin Installer Evaluation checks whether the package meets the detected
+installation's requirements, including metadata, minimum system versions,
+and recognized package components.
+
+A green check indicates a pass, a red X indicates a failure, and a gray
+dash indicates that a result could not be verified. The text beneath each
+heading gives details. The evaluator looks for the installer registered
+for .rmskin, then checks the standard Program Files locations.
+
+When both checks pass, click Install in the bottom-right corner.
+rmskinTESTER checks the package again and opens it in Rainmeter Skin
+Installer. Review the package there and confirm to install it.
+
+Recognize executables and scripts
+---------------------------------
+
+Executable filenames appear in red. Script filenames appear in orange
+(#C75A00). Click the Executables and Scripts bar at the bottom of Package
+contents. The bar slides up to reveal Type, Extensions, and Count columns.
+The executable total is red. The script total and breakdown are orange.
+The six main script categories appear when the package contains scripts,
+and additional categories appear when found. Click the bar again to close
+the panel. The bar is grayed out when the package contains neither type.
+
+Type                 Recognized extensions
+-------------------  -----------------------------------------------
+Executable           .exe
+Lua                  .lua .luac
+Batch                .bat .cmd
+PowerShell           .ps1 .psm1
+Python               .py .pyw .pyc .pyo
+AutoIt / AutoHotkey  .au3 .a3x .ahk
+JavaScript           .js .mjs .cjs .jse .jsx .jsxbin
+VBScript             .vbs .vbe
+Windows Script Host  .wsf .wsh .sct .wsc
+HTML Application     .hta
+Shell                .sh .bash .zsh .ksh .fish .csh .tcsh
+BASIC / VBA          .bas .vba
+Perl                 .pl .pm
+Ruby                 .rb
+PHP                  .php .phtml
+Tcl                  .tcl .expect
+R                    .r
+Groovy               .groovy .gvy
+SQL                  .sql
+
+Extension matching ignores capitalization. The summary is a file inventory.
+Package checks do not authenticate the publisher, evaluate script behavior,
+or check files embedded inside another archive.
+
+Change the theme or find help
+-----------------------------
+
+Open the hamburger menu at the top right. Choose Settings > Dark Mode to
+switch themes. rmskinTESTER follows the Windows app theme until you choose
+a theme, then remembers your choice between launches.
+
+Choose Help to open Manual.txt in your default text editor. Use Releases
+for downloads and Support for the Rainmeter forum topic.
+
+Use the command line
+--------------------
+
+From the installation or portable folder, pass a package path to the GUI
+or the console executable. Quote paths that contain spaces.
+
+    .\rmskinTESTER.exe "C:\Skins\Example.rmskin"
+    .\rmskinTESTER-cli.exe "C:\Skins\Example.rmskin"
+
+The console executable prints both results and a short explanation.
+
+Exit code  Meaning
+---------  ---------------------------------
+0          Both checks passed
+1          At least one check failed
+2          Validation could not be completed
+64         Invalid command-line arguments
+
+The GUI executable also accepts --check. Use rmskinTESTER-cli.exe for
+scripts and redirected output.

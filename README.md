@@ -2,7 +2,7 @@
 
 rmskinTESTER is a C++ utility for Windows 10 and 11 x64. Use **Browse**, press **Ctrl+O**, or drop a Rainmeter `.rmskin` file onto the window. The file tree lists archive entries. The INI panel displays fields in package order with one field per line. Scroll right to read long values.
 
-See the [user manual](Manual.md) for installation, file inspection, on-screen results, and command-line usage.
+Choose **Help** from the hamburger menu to open the included [user manual](Manual.txt) in your default text editor. It covers installation, file inspection, on-screen results, and command-line usage.
 
 The tree opens every `Plugin` or `Plugins` folder and expands the paths to executables and recognized scripts. Executable filenames are red and script filenames are orange. Use the **Executables and Scripts** bar in **Package contents** to open the counts and script breakdown. Counts are based on file extensions.
 

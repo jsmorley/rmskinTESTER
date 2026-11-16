@@ -38,11 +38,20 @@ constexpr int ReleasesId = 106;
 constexpr int SupportId = 107;
 constexpr int SummaryToggleId = 108;
 constexpr int FindingsListId = 109;
+constexpr int HelpId = 110;
 constexpr auto SettingsKey = L"Software\\rmskinTESTER";
 constexpr LPARAM ExecutableItem = -1;
 constexpr LPARAM ScriptItem = -2;
 constexpr UINT_PTR InspectTimer = 1;
 constexpr UINT_PTR SummaryTimer = 2;
+
+std::filesystem::path ManualPath() {
+    std::wstring executable(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    if (!length || length >= executable.size()) return {};
+    executable.resize(length);
+    return std::filesystem::path(executable).parent_path() / L"Manual.txt";
+}
 
 int CloseForSetup(const std::filesystem::path& executable) {
     struct Request {
@@ -641,6 +650,7 @@ struct App {
             (palette.highContrast ? MF_GRAYED : MF_ENABLED);
         AppendMenuW(settings, flags, DarkModeId, L"&Dark Mode");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, HelpId, L"&Help");
         AppendMenuW(menu, MF_STRING, ReleasesId, L"&Releases");
         AppendMenuW(menu, MF_STRING, SupportId, L"Su&pport");
         RECT anchor{};
@@ -655,6 +665,13 @@ struct App {
             Theme();
             if (saved != ERROR_SUCCESS) {
                 MessageBoxW(window, L"Could not save the dark mode setting for the next launch.", Title, MB_OK | MB_ICONWARNING);
+            }
+        } else if (choice == HelpId) {
+            const auto manual = ManualPath();
+            if (manual.empty() || reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open",
+                manual.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
+                MessageBoxW(window, L"Could not open Manual.txt. Keep it in the same folder as rmskinTESTER.exe.",
+                    Title, MB_OK | MB_ICONERROR);
             }
         } else if (choice == ReleasesId || choice == SupportId) {
             const wchar_t* url = choice == ReleasesId ? L"https://github.com/jsmorley/rmskinTESTER/releases" :
